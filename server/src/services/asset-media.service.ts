@@ -129,6 +129,7 @@ export class AssetMediaService extends BaseService {
     sidecarFile?: UploadFile,
   ): Promise<AssetMediaResponseDto> {
     let asset: Asset | undefined;
+    let originalPath = file.originalPath;
     try {
       await this.requireAccess({
         auth,
@@ -138,6 +139,9 @@ export class AssetMediaService extends BaseService {
       });
 
       this.requireQuota(auth, file.size);
+
+      await this.storageRepository.utimes(file.originalPath, new Date(), new Date(dto.fileModifiedAt));
+      originalPath = await this.storageRepository.storeOriginal(file.originalPath, auth.user.id);
 
       if (dto.livePhotoVideoId) {
         await onBeforeLink(
@@ -152,7 +156,7 @@ export class AssetMediaService extends BaseService {
 
         checksum: file.checksum,
         checksumAlgorithm: ChecksumAlgorithm.sha1File,
-        originalPath: file.originalPath,
+        originalPath,
 
         fileCreatedAt: dto.fileCreatedAt,
         fileModifiedAt: dto.fileModifiedAt,
@@ -178,7 +182,6 @@ export class AssetMediaService extends BaseService {
         });
         await this.storageRepository.utimes(sidecarFile.originalPath, new Date(), new Date(dto.fileModifiedAt));
       }
-      await this.storageRepository.utimes(file.originalPath, new Date(), new Date(dto.fileModifiedAt));
       await this.assetRepository.upsertExif({
         exif: { assetId: asset.id, fileSizeInByte: file.size },
         lockedPropertiesBehavior: 'override',
@@ -190,14 +193,21 @@ export class AssetMediaService extends BaseService {
         await this.addToSharedLink(auth.sharedLink, asset.id);
       }
 
-      await this.eventRepository.emit('AssetCreate', { asset, file });
+      await this.eventRepository.emit('AssetCreate', { asset, file: { ...file, originalPath } });
+
+      if (originalPath !== file.originalPath) {
+        // The bucket is durable and the DB row/jobs are committed before removing staging bytes.
+        await this.storageRepository
+          .unlink(file.originalPath)
+          .catch((error) => this.logger.warn('Unable to remove S3 upload staging file', error));
+      }
 
       return { id: asset.id, status: AssetMediaStatus.CREATED };
     } catch (error: any) {
       // clean up files
       await this.jobRepository.queue({
         name: JobName.FileDelete,
-        data: { files: [file.originalPath, sidecarFile?.originalPath] },
+        data: { files: [...new Set([originalPath, file.originalPath, sidecarFile?.originalPath])] },
       });
 
       // handle duplicates with a success response
@@ -242,6 +252,7 @@ export class AssetMediaService extends BaseService {
 
     return new ImmichFileResponse({
       path,
+      ...this.storageRepository.getRemoteFileOptions(path),
       fileName: getFileNameWithoutExtension(originalFileName) + getFilenameExtension(path),
       contentType: mimeTypes.lookup(path),
       cacheControl: CacheControl.PrivateWithCache,
@@ -310,6 +321,7 @@ export class AssetMediaService extends BaseService {
 
     return new ImmichFileResponse({
       path: filepath,
+      ...this.storageRepository.getRemoteFileOptions(filepath),
       contentType: mimeTypes.lookup(filepath),
       cacheControl: CacheControl.PrivateWithCache,
     });

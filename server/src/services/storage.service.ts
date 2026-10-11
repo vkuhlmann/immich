@@ -15,6 +15,7 @@ import {
 } from 'src/enum.js';
 import { BaseService } from 'src/services/base.service.js';
 import { ImmichStartupError } from 'src/utils/misc.js';
+import { isObjectPath } from 'src/utils/object-storage.js';
 
 const docsMessage = `Please see https://docs.immich.app/administration/system-integrity#folder-checks for more information.`;
 
@@ -46,6 +47,10 @@ export class StorageService extends BaseService {
   @OnEvent({ name: 'AppBootstrap', priority: BootstrapEventPriority.StorageService })
   async onBootstrap() {
     StorageCore.setMediaLocation(this.detectMediaLocation());
+    const s3 = this.configRepository.getEnv().storage.s3;
+    if (s3) {
+      await this.storageRepository.configureS3(s3, StorageCore.getMediaLocation());
+    }
 
     await this.databaseRepository.withLock(DatabaseLock.SystemFileMounts, async () => {
       const flags =
@@ -98,7 +103,8 @@ export class StorageService extends BaseService {
 
     await this.databaseRepository.withLock(DatabaseLock.MediaLocation, async () => {
       const current = StorageCore.getMediaLocation();
-      const samples = await this.assetRepository.getFileSamples();
+      const fileSamples = await this.assetRepository.getFileSamples();
+      const samples = fileSamples.filter(({ path }) => !isObjectPath(path));
       const savedValue = await this.systemMetadataRepository.get(SystemMetadataKey.MediaLocation);
       if (samples.length > 0) {
         const path = samples[0].path;
@@ -147,6 +153,9 @@ export class StorageService extends BaseService {
       try {
         await this.storageRepository.unlink(file);
       } catch (error: any) {
+        if (isObjectPath(file)) {
+          throw error;
+        }
         this.logger.warn('Unable to remove file from disk', error);
       }
     }

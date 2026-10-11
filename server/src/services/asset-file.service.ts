@@ -27,6 +27,7 @@ export class AssetFileService extends BaseService {
 
     return new ImmichFileResponse({
       path: file.path,
+      ...this.storageRepository.getRemoteFileOptions(file.path),
       fileName: getFileNameWithoutExtension(file.path) + getFilenameExtension(file.path),
       contentType: mimeTypes.lookup(file.path),
       cacheControl: CacheControl.PrivateWithCache,

@@ -114,6 +114,7 @@ export interface EnvData {
   storage: {
     ignoreMountCheckErrors: boolean;
     mediaLocation?: string;
+    s3?: import('src/utils/object-storage.js').ObjectStorageConfig;
   };
 
   workers: ImmichWorker[];
@@ -355,6 +356,20 @@ const getEnv = (): EnvData => {
     storage: {
       ignoreMountCheckErrors: !!dto.IMMICH_IGNORE_MOUNT_CHECK_ERRORS,
       mediaLocation: dto.IMMICH_MEDIA_LOCATION,
+      s3:
+        dto.IMMICH_STORAGE_BACKEND === 's3'
+          ? {
+              bucket: dto.IMMICH_S3_BUCKET!,
+              region: dto.IMMICH_S3_REGION ?? 'us-east-1',
+              endpoint: dto.IMMICH_S3_ENDPOINT,
+              accessKeyId: dto.IMMICH_S3_ACCESS_KEY_ID,
+              secretAccessKey: dto.IMMICH_S3_SECRET_ACCESS_KEY,
+              forcePathStyle: dto.IMMICH_S3_FORCE_PATH_STYLE ?? false,
+              prefix: (dto.IMMICH_S3_PREFIX ?? 'immich').replace(/\/+$/, ''),
+              temporaryDirectory: dto.IMMICH_S3_TEMP_LOCATION ?? join(dto.IMMICH_MEDIA_LOCATION ?? '/data', 's3-tmp'),
+              temporaryMaxBytes: dto.IMMICH_S3_TEMP_MAX_BYTES ?? 5 * 1024 ** 3,
+            }
+          : undefined,
     },
 
     telemetry: {

@@ -50,6 +50,22 @@ export const EnvSchema = z
     IMMICH_LOG_LEVEL: LogLevelSchema.optional(),
     IMMICH_LOG_FORMAT: LogFormatSchema.optional(),
     IMMICH_MEDIA_LOCATION: absolutePath,
+    IMMICH_STORAGE_BACKEND: z.enum(['local', 's3']).optional(),
+    IMMICH_S3_BUCKET: z
+      .string()
+      .regex(/^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$/)
+      .optional(),
+    IMMICH_S3_REGION: z.string().min(1).optional(),
+    IMMICH_S3_ENDPOINT: z.url().optional(),
+    IMMICH_S3_ACCESS_KEY_ID: z.string().min(1).optional(),
+    IMMICH_S3_SECRET_ACCESS_KEY: z.string().min(1).optional(),
+    IMMICH_S3_FORCE_PATH_STYLE: stringBool.optional(),
+    IMMICH_S3_PREFIX: z
+      .string()
+      .regex(/^(?!\/)(?!.*(?:^|\/)\.{1,2}(?:\/|$))[a-zA-Z0-9_/-]*$/)
+      .optional(),
+    IMMICH_S3_TEMP_LOCATION: absolutePath,
+    IMMICH_S3_TEMP_MAX_BYTES: z.coerce.number().int().positive().optional(),
     IMMICH_MICROSERVICES_METRICS_PORT: z.coerce.number().int().optional(),
     IMMICH_ALLOW_EXTERNAL_PLUGINS: stringBool.optional(),
     IMMICH_PLUGINS_INSTALL_FOLDER: absolutePath,
@@ -86,5 +102,17 @@ export const EnvSchema = z
     REDIS_PASSWORD: z.string().optional(),
     REDIS_SOCKET: z.string().optional(),
     REDIS_URL: z.string().optional(),
+  })
+  .superRefine((env, context) => {
+    if (env.IMMICH_STORAGE_BACKEND === 's3' && !env.IMMICH_S3_BUCKET) {
+      context.addIssue({ code: 'custom', path: ['IMMICH_S3_BUCKET'], message: 'Required for the S3 backend' });
+    }
+    if (!!env.IMMICH_S3_ACCESS_KEY_ID !== !!env.IMMICH_S3_SECRET_ACCESS_KEY) {
+      context.addIssue({
+        code: 'custom',
+        path: ['IMMICH_S3_SECRET_ACCESS_KEY'],
+        message: 'Provide both S3 credentials or use the AWS credential chain',
+      });
+    }
   })
   .meta({ id: 'EnvDto' });

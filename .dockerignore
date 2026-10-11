@@ -1,6 +1,8 @@
 .vscode/
 .github/
 .git/
+.tools/
+server/.s3-prototype/
 .env*
 *.log
 *.tmp

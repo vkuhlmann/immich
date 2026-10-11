@@ -21,6 +21,7 @@ import {
 import { BaseService } from 'src/services/base.service.js';
 import { getAssetFile } from 'src/utils/asset.util.js';
 import { getFilenameExtension, getLivePhotoMotionFilename } from 'src/utils/file.js';
+import { isObjectPath } from 'src/utils/object-storage.js';
 
 const storageTokens = {
   secondOptions: ['s', 'ss', 'SSS'],
@@ -225,7 +226,7 @@ export class StorageTemplateService extends BaseService {
   }
 
   async moveAsset(asset: StorageAsset, metadata: MoveAssetMetadata, stillPhoto?: StorageAsset) {
-    if (asset.isExternal || StorageCore.isAndroidMotionPath(asset.originalPath)) {
+    if (asset.isExternal || isObjectPath(asset.originalPath) || StorageCore.isAndroidMotionPath(asset.originalPath)) {
       // External assets are not affected by storage template
       // TODO: shouldn't this only apply to external assets?
       return;

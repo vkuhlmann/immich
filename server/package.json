@@ -36,9 +36,12 @@
     "migrations:verify-order": "sql-tools migrations verify-order",
     "schema:drop": "sql-tools -u ${DB_URL:-postgres://postgres:postgres@localhost:5432/immich} query 'DROP schema public cascade; CREATE schema public;'",
     "schema:reset": "pnpm run schema:drop && pnpm run migrations:run",
-    "email:dev": "email dev -p 3050 --dir src/emails"
+    "email:dev": "email dev -p 3050 --dir src/emails",
+    "test:s3": "vitest run --config test/vitest.config.s3.mjs"
   },
   "dependencies": {
+    "@aws-sdk/client-s3": "^3.1149.0",
+    "@aws-sdk/lib-storage": "^3.1149.0",
     "@extism/extism": "2.0.0-rc13",
     "@immich/plugin-sdk": "workspace:*",
     "@immich/sql-tools": "^0.6.3",
@@ -145,6 +148,7 @@
     "@types/picomatch": "^4.0.0",
     "@types/pngjs": "^6.0.5",
     "@types/react": "^19.0.0",
+    "@types/s3rver": "^3.7.4",
     "@types/semver": "^7.5.8",
     "@types/supertest": "^7.0.0",
     "@types/ua-parser-js": "^0.7.36",
@@ -161,6 +165,7 @@
     "mock-fs": "^5.2.0",
     "pngjs": "^7.0.0",
     "prettier": "^3.7.4",
+    "s3rver": "^3.7.1",
     "sql-formatter": "^15.0.0",
     "supertest": "^7.1.0",
     "tailwindcss": "^3.4.0",

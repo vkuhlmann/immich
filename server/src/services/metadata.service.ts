@@ -34,6 +34,7 @@ import { isAssetChecksumConstraint } from 'src/utils/database.js';
 import { mergeTimeZone } from 'src/utils/date.js';
 import { mimeTypes } from 'src/utils/mime-types.js';
 import { batched, isFaceImportEnabled } from 'src/utils/misc.js';
+import { isObjectPath } from 'src/utils/object-storage.js';
 import { upsertTags } from 'src/utils/tag.js';
 import { Tasks } from 'src/utils/tasks.js';
 
@@ -236,184 +237,190 @@ export class MetadataService extends BaseService {
       return;
     }
 
-    const [exifResult, stats] = await Promise.all([
-      this.getExifTags(asset),
-      this.storageRepository.stat(asset.originalPath),
-    ]);
-    const { tags: exifTags, audio, video, packets, format } = exifResult;
-    this.logger.verbose('Exif Tags', exifTags);
+    const remoteAsset = asset;
+    return this.storageRepository.withLocalFile(asset.originalPath, async (localPath) => {
+      const asset = { ...remoteAsset, originalPath: localPath };
+      const [exifResult, stats] = await Promise.all([
+        this.getExifTags(asset),
+        this.storageRepository.stat(asset.originalPath),
+      ]);
+      const { tags: exifTags, audio, video, packets, format } = exifResult;
+      this.logger.verbose('Exif Tags', exifTags);
 
-    const dates = this.getDates(asset, exifTags, stats);
+      const dates = this.getDates(asset, exifTags, stats);
 
-    const { width, height } = this.getImageDimensions(exifTags);
-    let geo: ReverseGeocodeResult = { country: null, state: null, city: null },
-      latitude: number | null = null,
-      longitude: number | null = null;
-    if (this.hasGeo(exifTags)) {
-      latitude = Number(exifTags.GPSLatitude);
-      longitude = Number(exifTags.GPSLongitude);
-      if (reverseGeocoding.enabled) {
-        geo = await this.mapRepository.reverseGeocode({ latitude, longitude });
+      const { width, height } = this.getImageDimensions(exifTags);
+      let geo: ReverseGeocodeResult = { country: null, state: null, city: null },
+        latitude: number | null = null,
+        longitude: number | null = null;
+      if (this.hasGeo(exifTags)) {
+        latitude = Number(exifTags.GPSLatitude);
+        longitude = Number(exifTags.GPSLongitude);
+        if (reverseGeocoding.enabled) {
+          geo = await this.mapRepository.reverseGeocode({ latitude, longitude });
+        }
       }
-    }
 
-    const tags = this.getTagList(exifTags);
+      const tags = this.getTagList(exifTags);
 
-    const exifData: Insertable<AssetExifTable> = {
-      assetId: asset.id,
+      const exifData: Insertable<AssetExifTable> = {
+        assetId: asset.id,
 
-      // dates
-      dateTimeOriginal: dates.dateTimeOriginal,
-      modifyDate: stats.mtime,
-      timeZone: dates.timeZone,
+        // dates
+        dateTimeOriginal: dates.dateTimeOriginal,
+        modifyDate: stats.mtime,
+        timeZone: dates.timeZone,
 
-      // gps
-      latitude,
-      longitude,
-      country: geo.country,
-      state: geo.state,
-      city: geo.city,
+        // gps
+        latitude,
+        longitude,
+        country: geo.country,
+        state: geo.state,
+        city: geo.city,
 
-      // image/file
-      fileSizeInByte: stats.size,
-      exifImageHeight: validate(height),
-      exifImageWidth: validate(width),
-      orientation: validate(exifTags.Orientation)?.toString() ?? null,
-      projectionType: exifTags.ProjectionType ? exifTags.ProjectionType.toUpperCase() : null,
-      bitsPerSample: this.getBitsPerSample(exifTags),
-      colorspace: exifTags.ColorSpace === undefined ? null : String(exifTags.ColorSpace),
+        // image/file
+        fileSizeInByte: stats.size,
+        exifImageHeight: validate(height),
+        exifImageWidth: validate(width),
+        orientation: validate(exifTags.Orientation)?.toString() ?? null,
+        projectionType: exifTags.ProjectionType ? exifTags.ProjectionType.toUpperCase() : null,
+        bitsPerSample: this.getBitsPerSample(exifTags),
+        colorspace: exifTags.ColorSpace === undefined ? null : String(exifTags.ColorSpace),
 
-      // camera
-      make:
-        exifTags.Make ??
-        exifTags.Device?.Manufacturer ??
-        exifTags.AndroidMake ??
-        exifTags.DeviceManufacturer ??
-        (exifTags.SamsungModel ? 'Samsung' : null),
-      model:
-        exifTags.Model ??
-        exifTags.Device?.ModelName ??
-        exifTags.AndroidModel ??
-        exifTags.DeviceModelName ??
-        exifTags.Author ??
-        null,
-      fps: video?.frameRate ?? validate(Number(exifTags.VideoFrameRate!)),
-      iso: validate(exifTags.RecommendedExposureIndex ?? exifTags.StandardOutputSensitivity ?? exifTags.ISO) as number,
-      exposureTime: exifTags.ExposureTime ?? null,
-      lensModel: getLensModel(exifTags),
-      fNumber: validate(exifTags.FNumber),
-      focalLength: validate(exifTags.FocalLength),
+        // camera
+        make:
+          exifTags.Make ??
+          exifTags.Device?.Manufacturer ??
+          exifTags.AndroidMake ??
+          exifTags.DeviceManufacturer ??
+          (exifTags.SamsungModel ? 'Samsung' : null),
+        model:
+          exifTags.Model ??
+          exifTags.Device?.ModelName ??
+          exifTags.AndroidModel ??
+          exifTags.DeviceModelName ??
+          exifTags.Author ??
+          null,
+        fps: video?.frameRate ?? validate(Number(exifTags.VideoFrameRate!)),
+        iso: validate(
+          exifTags.RecommendedExposureIndex ?? exifTags.StandardOutputSensitivity ?? exifTags.ISO,
+        ) as number,
+        exposureTime: exifTags.ExposureTime ?? null,
+        lensModel: getLensModel(exifTags),
+        fNumber: validate(exifTags.FNumber),
+        focalLength: validate(exifTags.FocalLength),
 
-      // comments
-      description: String(exifTags.ImageDescription || exifTags.Description || '').trim(),
-      profileDescription: exifTags.ProfileDescription || null,
-      rating: exifTags.Rating === 0 ? null : validateRange(exifTags.Rating, 1, 5),
+        // comments
+        description: String(exifTags.ImageDescription || exifTags.Description || '').trim(),
+        profileDescription: exifTags.ProfileDescription || null,
+        rating: exifTags.Rating === 0 ? null : validateRange(exifTags.Rating, 1, 5),
 
-      // grouping
-      livePhotoCID: (exifTags.ContentIdentifier || exifTags.MediaGroupUUID) ?? null,
-      autoStackId: this.getAutoStackId(exifTags),
+        // grouping
+        livePhotoCID: (exifTags.ContentIdentifier || exifTags.MediaGroupUUID) ?? null,
+        autoStackId: this.getAutoStackId(exifTags),
 
-      tags: tags.length > 0 ? tags : null,
-    };
+        tags: tags.length > 0 ? tags : null,
+      };
 
-    const audioData =
-      format && audio?.codecName
-        ? {
-            assetId: asset.id,
-            bitrate: audio.bitrate,
-            index: audio.index,
-            profile: audio.profile,
-            codecName: audio.codecName,
-          }
-        : undefined;
+      const audioData =
+        format && audio?.codecName
+          ? {
+              assetId: asset.id,
+              bitrate: audio.bitrate,
+              index: audio.index,
+              profile: audio.profile,
+              codecName: audio.codecName,
+            }
+          : undefined;
 
-    const videoData =
-      format?.formatName && format.formatLongName && video?.codecName && video?.timeBase
-        ? {
-            assetId: asset.id,
-            bitrate: video.bitrate,
-            frameCount: video.frameCount,
-            timeBase: video.timeBase,
-            index: video.index,
-            profile: video.profile,
-            level: video.level,
-            colorPrimaries: video.colorPrimaries,
-            colorTransfer: video.colorTransfer,
-            colorMatrix: video.colorMatrix,
-            dvProfile: video.dvProfile,
-            dvLevel: video.dvLevel,
-            dvBlSignalCompatibilityId: video.dvBlSignalCompatibilityId,
-            codecName: video.codecName,
-            formatName: format.formatName,
-            formatLongName: format.formatLongName,
-            pixelFormat: video.pixelFormat,
-          }
-        : undefined;
+      const videoData =
+        format?.formatName && format.formatLongName && video?.codecName && video?.timeBase
+          ? {
+              assetId: asset.id,
+              bitrate: video.bitrate,
+              frameCount: video.frameCount,
+              timeBase: video.timeBase,
+              index: video.index,
+              profile: video.profile,
+              level: video.level,
+              colorPrimaries: video.colorPrimaries,
+              colorTransfer: video.colorTransfer,
+              colorMatrix: video.colorMatrix,
+              dvProfile: video.dvProfile,
+              dvLevel: video.dvLevel,
+              dvBlSignalCompatibilityId: video.dvBlSignalCompatibilityId,
+              codecName: video.codecName,
+              formatName: format.formatName,
+              formatLongName: format.formatLongName,
+              pixelFormat: video.pixelFormat,
+            }
+          : undefined;
 
-    const keyframeData =
-      packets && packets.keyframePts.length > 0
-        ? {
-            assetId: asset.id,
-            totalDuration: packets.totalDuration,
-            packetCount: packets.packetCount,
-            outputFrames: packets.outputFrames,
-            pts: packets.keyframePts,
-            accDuration: packets.keyframeAccDuration,
-            ownDuration: packets.keyframeOwnDuration,
-          }
-        : undefined;
+      const keyframeData =
+        packets && packets.keyframePts.length > 0
+          ? {
+              assetId: asset.id,
+              totalDuration: packets.totalDuration,
+              packetCount: packets.packetCount,
+              outputFrames: packets.outputFrames,
+              pts: packets.keyframePts,
+              accDuration: packets.keyframeAccDuration,
+              ownDuration: packets.keyframeOwnDuration,
+            }
+          : undefined;
 
-    const isSidewards = exifTags.Orientation && this.isOrientationSidewards(exifTags.Orientation);
-    const assetWidth = validate(isSidewards ? height : width);
-    const assetHeight = validate(isSidewards ? width : height);
+      const isSidewards = exifTags.Orientation && this.isOrientationSidewards(exifTags.Orientation);
+      const assetWidth = validate(isSidewards ? height : width);
+      const assetHeight = validate(isSidewards ? width : height);
 
-    const tasks = new Tasks();
+      const tasks = new Tasks();
 
-    tasks.push(
-      () =>
-        this.assetRepository.update({
-          id: asset.id,
-          duration: this.getDuration(exifTags),
-          localDateTime: dates.localDateTime,
-          fileCreatedAt: dates.dateTimeOriginal ?? undefined,
-          fileModifiedAt: stats.mtime,
+      tasks.push(
+        () =>
+          this.assetRepository.update({
+            id: asset.id,
+            duration: this.getDuration(exifTags),
+            localDateTime: dates.localDateTime,
+            fileCreatedAt: dates.dateTimeOriginal ?? undefined,
+            fileModifiedAt: stats.mtime,
 
-          // Keep unedited assets in sync with the file on disk, but don't overwrite edited dimensions.
-          width: !asset.isEdited || asset.width === null ? assetWidth : undefined,
-          height: !asset.isEdited || asset.height === null ? assetHeight : undefined,
-        }),
-      async () => {
-        await this.assetRepository.upsertExif({
-          exif: exifData,
-          audio: audioData,
-          video: videoData,
-          keyframes: keyframeData,
-          lockedPropertiesBehavior: 'skip',
-        });
-        await this.applyTagList(asset);
-      },
-    );
+            // Keep unedited assets in sync with the file on disk, but don't overwrite edited dimensions.
+            width: !asset.isEdited || asset.width === null ? assetWidth : undefined,
+            height: !asset.isEdited || asset.height === null ? assetHeight : undefined,
+          }),
+        async () => {
+          await this.assetRepository.upsertExif({
+            exif: exifData,
+            audio: audioData,
+            video: videoData,
+            keyframes: keyframeData,
+            lockedPropertiesBehavior: 'skip',
+          });
+          await this.applyTagList(asset);
+        },
+      );
 
-    if (this.isMotionPhoto(asset, exifTags)) {
-      tasks.push(() => this.applyMotionPhotos(asset, exifTags, dates, stats));
-    }
+      if (this.isMotionPhoto(asset, exifTags)) {
+        tasks.push(() => this.applyMotionPhotos(asset, exifTags, dates, stats));
+      }
 
-    if (isFaceImportEnabled(metadata) && this.hasTaggedFaces(exifTags)) {
-      tasks.push(() => this.applyTaggedFaces(asset, exifTags));
-    }
+      if (isFaceImportEnabled(metadata) && this.hasTaggedFaces(exifTags)) {
+        tasks.push(() => this.applyTaggedFaces(asset, exifTags));
+      }
 
-    await tasks.all();
+      await tasks.all();
 
-    if (exifData.livePhotoCID) {
-      await this.linkLivePhotos(asset, exifData);
-    }
+      if (exifData.livePhotoCID) {
+        await this.linkLivePhotos(asset, exifData);
+      }
 
-    await this.assetRepository.upsertJobStatus({ assetId: asset.id, metadataExtractedAt: new Date() });
+      await this.assetRepository.upsertJobStatus({ assetId: asset.id, metadataExtractedAt: new Date() });
 
-    await this.eventRepository.emit('AssetMetadataExtracted', {
-      assetId: asset.id,
-      userId: asset.ownerId,
-      source: data.source,
+      await this.eventRepository.emit('AssetMetadataExtracted', {
+        assetId: asset.id,
+        userId: asset.ownerId,
+        source: data.source,
+      });
     });
   }
 
@@ -490,7 +497,7 @@ export class MetadataService extends BaseService {
     const lockedProperties = await this.assetJobRepository.getLockedPropertiesForMetadataExtraction(id);
 
     const { sidecarFile } = getAssetFiles(asset.files);
-    const sidecarPath = sidecarFile?.path || `${asset.originalPath}.xmp`;
+    const sidecarPath = sidecarFile?.path || this.storageRepository.getSidecarPath(asset.originalPath);
 
     const { description, dateTimeOriginal, latitude, longitude, rating, tags, timeZone } = pick(
       {
@@ -539,6 +546,11 @@ export class MetadataService extends BaseService {
     const { sidecarFile } = getAssetFiles(files);
     if (sidecarFile?.path) {
       candidates.push(sidecarFile.path);
+    }
+
+    if (isObjectPath(originalPath)) {
+      candidates.push(this.storageRepository.getSidecarPath(originalPath));
+      return candidates;
     }
 
     const assetPath = parse(originalPath);

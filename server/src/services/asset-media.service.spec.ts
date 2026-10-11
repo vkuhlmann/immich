@@ -297,6 +297,30 @@ describe(AssetMediaService.name, () => {
   });
 
   describe('uploadAsset', () => {
+    it('does not commit an asset or acknowledge an upload if S3 storage fails', async () => {
+      mocks.storage.storeOriginal.mockRejectedValue(new Error('S3 unavailable'));
+      await expect(sut.uploadAsset(authStub.user1, createDto, fileStub.photo)).rejects.toThrow('S3 unavailable');
+      expect(mocks.asset.create).not.toHaveBeenCalled();
+      expect(mocks.user.updateUsage).not.toHaveBeenCalled();
+      expect(mocks.event.emit).not.toHaveBeenCalled();
+      expect(mocks.job.queue).toHaveBeenCalledExactlyOnceWith({
+        name: JobName.FileDelete,
+        data: { files: [fileStub.photo.originalPath, undefined] },
+      });
+    });
+
+    it('cleans up both copies when the database rejects a completed S3 upload', async () => {
+      const remotePath = 's3://immich-test/immich/originals/user/photo.jpg';
+      mocks.storage.storeOriginal.mockResolvedValue(remotePath);
+      mocks.asset.create.mockRejectedValue(new Error('Database unavailable'));
+      await expect(sut.uploadAsset(authStub.user1, createDto, fileStub.photo)).rejects.toThrow('Database unavailable');
+      expect(mocks.job.queue).toHaveBeenCalledExactlyOnceWith({
+        name: JobName.FileDelete,
+        data: { files: [remotePath, fileStub.photo.originalPath, undefined] },
+      });
+      expect(mocks.storage.unlink).not.toHaveBeenCalled();
+    });
+
     it('should throw an error if the quota is exceeded', async () => {
       const file = {
         uuid: 'random-uuid',

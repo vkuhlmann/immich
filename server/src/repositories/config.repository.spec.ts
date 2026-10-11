@@ -16,6 +16,16 @@ const resetEnv = () => {
     'IMMICH_TRUSTED_PROXIES',
     'IMMICH_API_METRICS_PORT',
     'IMMICH_MEDIA_LOCATION',
+    'IMMICH_STORAGE_BACKEND',
+    'IMMICH_S3_BUCKET',
+    'IMMICH_S3_REGION',
+    'IMMICH_S3_ENDPOINT',
+    'IMMICH_S3_ACCESS_KEY_ID',
+    'IMMICH_S3_SECRET_ACCESS_KEY',
+    'IMMICH_S3_FORCE_PATH_STYLE',
+    'IMMICH_S3_PREFIX',
+    'IMMICH_S3_TEMP_LOCATION',
+    'IMMICH_S3_TEMP_MAX_BYTES',
     'IMMICH_MICROSERVICES_METRICS_PORT',
     'IMMICH_TELEMETRY_INCLUDE',
     'IMMICH_TELEMETRY_EXCLUDE',
@@ -65,6 +75,50 @@ const sentinelConfig = {
 describe('getEnv', () => {
   beforeEach(() => {
     resetEnv();
+  });
+
+  afterEach(() => {
+    resetEnv();
+    clearEnvCache();
+  });
+
+  describe('S3 storage', () => {
+    it('keeps local storage as the default', () => {
+      expect(getEnv().storage.s3).toBeUndefined();
+    });
+
+    it('requires a bucket before enabling S3', () => {
+      process.env.IMMICH_STORAGE_BACKEND = 's3';
+      expect(() => getEnv()).toThrow('[IMMICH_S3_BUCKET] Required');
+    });
+
+    it('requires credentials as a pair', () => {
+      process.env.IMMICH_S3_ACCESS_KEY_ID = 'test';
+      expect(() => getEnv()).toThrow('Provide both S3 credentials');
+    });
+
+    it('supports the credential chain and configurable processing limits', () => {
+      process.env.IMMICH_STORAGE_BACKEND = 's3';
+      process.env.IMMICH_S3_BUCKET = 'immich-test';
+      process.env.IMMICH_MEDIA_LOCATION = '/media';
+      process.env.IMMICH_S3_TEMP_MAX_BYTES = '1024';
+      expect(getEnv().storage.s3).toEqual({
+        bucket: 'immich-test',
+        region: 'us-east-1',
+        endpoint: undefined,
+        accessKeyId: undefined,
+        secretAccessKey: undefined,
+        forcePathStyle: false,
+        prefix: 'immich',
+        temporaryDirectory: '/media/s3-tmp',
+        temporaryMaxBytes: 1024,
+      });
+    });
+
+    it.each(['../other', '/absolute', 'photos/../other'])('rejects an unsafe prefix %s', (prefix) => {
+      process.env.IMMICH_S3_PREFIX = prefix;
+      expect(() => getEnv()).toThrow('[IMMICH_S3_PREFIX]');
+    });
   });
 
   it('should use defaults', () => {

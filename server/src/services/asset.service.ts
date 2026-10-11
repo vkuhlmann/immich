@@ -280,10 +280,11 @@ export class AssetService extends BaseService {
       await this.storageRepository.unlink(targetFile.path);
     }
 
-    await this.storageRepository.copyFile(sourceFile.path, `${targetAsset.originalPath}.xmp`);
+    const sidecarPath = this.storageRepository.getSidecarPath(targetAsset.originalPath);
+    await this.storageRepository.copyFile(sourceFile.path, sidecarPath);
     await this.assetRepository.upsertFile({
       assetId: targetAsset.id,
-      path: `${targetAsset.originalPath}.xmp`,
+      path: sidecarPath,
       type: AssetFileType.Sidecar,
     });
     await this.jobRepository.queue({ name: JobName.AssetExtractMetadata, data: { id: targetAsset.id } });

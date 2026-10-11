@@ -47,6 +47,14 @@ export const newStorageRepositoryMock = (): Mocked<RepositoryInterface<StorageRe
   StorageCore.setMediaLocation('/data');
 
   return {
+    configureS3: vitest.fn(),
+    storeOriginal: vitest.fn().mockImplementation((path) => Promise.resolve(path)),
+    acquireLocalFile: vitest
+      .fn()
+      .mockImplementation((path) => Promise.resolve({ path, release: () => Promise.resolve() })),
+    withLocalFile: vitest.fn().mockImplementation((path, handler) => handler(path)),
+    getRemoteFileOptions: vitest.fn().mockReturnValue({}),
+    getSidecarPath: vitest.fn().mockImplementation((path) => `${path}.xmp`),
     createZipStream: vitest.fn(),
     createPlainReadStream: vitest.fn(),
     createReadStream: vitest.fn(),

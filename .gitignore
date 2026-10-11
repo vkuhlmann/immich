@@ -6,6 +6,8 @@
 !.vscode/extensions.json
 .idea
 .scratch
+.tools
+server/.s3-prototype
 
 docker/upload
 docker/library

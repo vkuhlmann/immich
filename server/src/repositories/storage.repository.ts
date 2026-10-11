@@ -2,6 +2,7 @@ import { Injectable } from '@nestjs/common';
 import archiver from 'archiver';
 import { ChokidarOptions, watch as chokidarWatch } from 'chokidar';
 import fastGlob from 'fast-glob';
+import { createHash } from 'node:crypto';
 import {
   Dirent,
   ReadOptionsWithBuffer,
@@ -20,6 +21,7 @@ import picomatch from 'picomatch';
 import { CrawlOptionsDto, WalkOptionsDto } from 'src/dtos/library.dto.js';
 import { LoggingRepository } from 'src/repositories/logging.repository.js';
 import { mimeTypes } from 'src/utils/mime-types.js';
+import { LocalFile, ObjectStorage, ObjectStorageConfig, isObjectPath } from 'src/utils/object-storage.js';
 
 export interface WatchEvents {
   onReady(): void;
@@ -51,11 +53,72 @@ export interface DiskUsage {
 
 @Injectable()
 export class StorageRepository {
+  private objectStorage?: ObjectStorage;
+
   constructor(private logger: LoggingRepository) {
     this.logger.setContext(StorageRepository.name);
   }
 
+  async configureS3(config: ObjectStorageConfig, mediaDirectory: string) {
+    const storage = new ObjectStorage(config);
+    await storage.initialize();
+    this.objectStorage = storage;
+    this.s3SidecarDirectory = path.join(mediaDirectory, 'sidecars');
+  }
+
+  private get s3() {
+    if (!this.objectStorage) {
+      throw new Error('S3 originals require a configured S3 backend');
+    }
+    return this.objectStorage;
+  }
+
+  async storeOriginal(filepath: string, ownerId: string): Promise<string> {
+    return this.objectStorage ? this.objectStorage.upload(filepath, ownerId) : filepath;
+  }
+
+  async acquireLocalFile(filepath: string): Promise<LocalFile> {
+    return isObjectPath(filepath) ? this.s3.acquire(filepath) : { path: filepath, release: async () => {} };
+  }
+
+  async withLocalFile<T>(filepath: string, handler: (localPath: string) => Promise<T>): Promise<T> {
+    const file = await this.acquireLocalFile(filepath);
+    try {
+      return await handler(file.path);
+    } finally {
+      await file.release();
+    }
+  }
+
+  getRemoteFileOptions(filepath: string) {
+    return isObjectPath(filepath)
+      ? {
+          getStream: (range?: string) => this.s3.read(filepath, range),
+          getSize: async () => {
+            const object = await this.s3.head(filepath);
+            return object.ContentLength ?? 0;
+          },
+        }
+      : {};
+  }
+
+  getSidecarPath(filepath: string): string {
+    if (!isObjectPath(filepath)) {
+      return `${filepath}.xmp`;
+    }
+    // Keep mutable sidecars local, independently of short-lived processing files.
+    const hash = createHash('sha256').update(filepath).digest('hex');
+    const destination = path.join(this.s3SidecarDirectory, `${hash}.xmp`);
+    this.mkdirSync(path.dirname(destination));
+    return destination;
+  }
+
+  private s3SidecarDirectory = '/data/sidecars';
+
   realpath(filepath: string) {
+    if (isObjectPath(filepath)) {
+      return Promise.resolve(filepath);
+    }
     return fs.realpath(filepath);
   }
 
@@ -68,10 +131,16 @@ export class StorageRepository {
   }
 
   copyFile(source: string, target: string) {
-    return fs.copyFile(source, target);
+    if (isObjectPath(target)) {
+      throw new Error('S3 originals are immutable');
+    }
+    return this.withLocalFile(source, (localPath) => fs.copyFile(localPath, target));
   }
 
   stat(filepath: string) {
+    if (isObjectPath(filepath)) {
+      return this.s3.stat(filepath);
+    }
     return fs.stat(filepath);
   }
 
@@ -103,6 +172,10 @@ export class StorageRepository {
     const archive = archiver('zip', { store: true });
 
     const addFile = (input: string, filename: string) => {
+      if (isObjectPath(input)) {
+        archive.append(this.s3.createReadStream(input), { name: filename, mode: 0o644 });
+        return;
+      }
       archive.file(input, { name: filename, mode: 0o644 });
     };
 
@@ -120,10 +193,17 @@ export class StorageRepository {
   }
 
   createPlainReadStream(filepath: string): Readable {
+    if (isObjectPath(filepath)) {
+      return this.s3.createReadStream(filepath);
+    }
     return createReadStream(filepath);
   }
 
   async createReadStream(filepath: string, mimeType?: string | null): Promise<ImmichReadStream> {
+    if (isObjectPath(filepath)) {
+      const object = await this.s3.read(filepath);
+      return { stream: object.stream, length: object.length, type: mimeType || undefined };
+    }
     const { size } = await fs.stat(filepath);
     await fs.access(filepath, constants.R_OK);
     return {
@@ -134,6 +214,9 @@ export class StorageRepository {
   }
 
   async readFile(filepath: string, options?: ReadOptionsWithBuffer<Buffer>): Promise<Buffer> {
+    if (isObjectPath(filepath)) {
+      return this.withLocalFile(filepath, (localPath) => this.readFile(localPath, options));
+    }
     // read a slice
     if (options) {
       const file = await fs.open(filepath);
@@ -155,6 +238,9 @@ export class StorageRepository {
   }
 
   async checkFileExists(filepath: string, mode = constants.F_OK): Promise<boolean> {
+    if (isObjectPath(filepath)) {
+      return this.s3.exists(filepath);
+    }
     try {
       await fs.access(filepath, mode);
       return true;
@@ -164,6 +250,10 @@ export class StorageRepository {
   }
 
   async unlink(file: string) {
+    if (isObjectPath(file)) {
+      await this.s3.delete(file);
+      return;
+    }
     try {
       await fs.unlink(file);
     } catch (error) {

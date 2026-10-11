@@ -36,6 +36,7 @@ import {
 import { BaseService } from 'src/services/base.service.js';
 import { ImmichFileResponse } from 'src/utils/file.js';
 import { batched, handlePromiseError } from 'src/utils/misc.js';
+import { isObjectPath } from 'src/utils/object-storage.js';
 
 /**
  * Untracked Files:
@@ -166,6 +167,7 @@ export class IntegrityService extends BaseService {
 
     return new ImmichFileResponse({
       path,
+      ...this.storageRepository.getRemoteFileOptions(path),
       fileName: basename(path),
       contentType: 'application/octet-stream',
       cacheControl: CacheControl.PrivateWithoutCache,
@@ -405,7 +407,13 @@ export class IntegrityService extends BaseService {
         try {
           await this.storageRepository.stat(item.path);
           return { ...item, exists: true };
-        } catch {
+        } catch (error) {
+          if (
+            isObjectPath(item.path) &&
+            (error as { $metadata?: { httpStatusCode?: number } }).$metadata?.httpStatusCode !== 404
+          ) {
+            throw error;
+          }
           return { ...item, exists: false };
         }
       }),
@@ -444,7 +452,13 @@ export class IntegrityService extends BaseService {
         try {
           await this.storageRepository.stat(path);
           return reportId;
-        } catch {
+        } catch (error) {
+          if (
+            isObjectPath(path) &&
+            (error as { $metadata?: { httpStatusCode?: number } }).$metadata?.httpStatusCode !== 404
+          ) {
+            throw error;
+          }
           return;
         }
       }),
@@ -492,6 +506,7 @@ export class IntegrityService extends BaseService {
     reportId: string | null,
   ) {
     const hash = createHash('sha1');
+    const mismatch = new Error('File failed checksum');
 
     try {
       await pipeline([
@@ -509,16 +524,24 @@ export class IntegrityService extends BaseService {
           await this.integrityRepository.deleteById(reportId);
         }
       } else {
-        throw new Error('File failed checksum');
+        throw mismatch;
       }
     } catch (error) {
-      if ((error as { code?: string }).code === 'ENOENT') {
+      if (
+        (error as { code?: string }).code === 'ENOENT' ||
+        (isObjectPath(originalPath) &&
+          (error as { $metadata?: { httpStatusCode?: number } }).$metadata?.httpStatusCode === 404)
+      ) {
         if (reportId) {
           await this.integrityRepository.deleteById(reportId);
         }
 
         // missing file; handled by the missing files job
         return;
+      }
+
+      if (isObjectPath(originalPath) && error !== mismatch) {
+        throw error;
       }
 
       this.logger.warn('Failed to process a file: ' + error);
@@ -625,8 +648,15 @@ export class IntegrityService extends BaseService {
             }),
           ]);
         } catch (error) {
-          if ((error as { code?: string }).code === 'ENOENT') {
+          if (
+            (error as { code?: string }).code === 'ENOENT' ||
+            (isObjectPath(path) &&
+              (error as { $metadata?: { httpStatusCode?: number } }).$metadata?.httpStatusCode === 404)
+          ) {
             return reportId;
+          }
+          if (isObjectPath(path)) {
+            throw error;
           }
         }
 

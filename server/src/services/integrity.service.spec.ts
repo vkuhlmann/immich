@@ -1,3 +1,5 @@
+import { Readable } from 'node:stream';
+import { IntegrityReport, JobStatus } from 'src/enum.js';
 import { IntegrityService } from 'src/services/integrity.service.js';
 import { ServiceMocks, newTestService } from 'test/utils.js';
 
@@ -11,6 +13,44 @@ describe(IntegrityService.name, () => {
 
   it('should work', () => {
     expect(sut).toBeDefined();
+  });
+
+  describe('S3 outages', () => {
+    const path = 's3://immich-test/immich/originals/user/photo.jpg';
+    const unavailable = Object.assign(new Error('S3 unavailable'), { $metadata: { httpStatusCode: 503 } });
+
+    it('does not report inaccessible objects as missing', async () => {
+      mocks.storage.stat.mockRejectedValue(unavailable);
+      await expect(
+        sut.handleMissingFiles({ items: [{ path, assetId: 'asset-id', fileAssetId: null, reportId: null }] }),
+      ).rejects.toThrow('S3 unavailable');
+      expect(mocks.integrityReport.create).not.toHaveBeenCalled();
+    });
+
+    it('reports genuinely missing objects', async () => {
+      mocks.storage.stat.mockRejectedValue(
+        Object.assign(new Error('Not found'), { $metadata: { httpStatusCode: 404 } }),
+      );
+      expect(
+        await sut.handleMissingFiles({ items: [{ path, assetId: 'asset-id', fileAssetId: null, reportId: null }] }),
+      ).toBe(JobStatus.Success);
+      expect(mocks.integrityReport.create).toHaveBeenCalledWith([
+        { path, assetId: 'asset-id', fileAssetId: null, type: IntegrityReport.MissingFile },
+      ]);
+    });
+
+    it('preserves existing checksum reports when the bucket is unavailable', async () => {
+      const stream = new Readable({
+        read() {
+          stream.destroy(unavailable);
+        },
+      });
+      mocks.storage.createPlainReadStream.mockReturnValue(stream);
+      await expect(
+        sut.handleChecksumRefresh({ items: [{ path, reportId: 'report-id', checksum: '1234' }] }),
+      ).rejects.toThrow('S3 unavailable');
+      expect(mocks.integrityReport.deleteByIds).not.toHaveBeenCalled();
+    });
   });
 
   describe('handleUntrackedFiles', () => {
