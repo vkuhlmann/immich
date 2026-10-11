@@ -1,8 +1,0 @@
-{
-  "ffmpeg": {
-    "transcode": "all"
-  },
-  "machineLearning": {
-    "enabled": false
-  }
-}
